@@ -1,0 +1,19 @@
+{
+  "name": "dailybrain",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Osobní learning Telegram bot s denními fakty a spaced-repetition kvízy",
+  "scripts": {
+    "poll": "node src/index.js poll",
+    "schedule": "node src/index.js schedule",
+    "seed": "node src/index.js seed"
+  },
+  "dependencies": {
+    "grammy": "^1.31.0",
+    "@google/generative-ai": "^0.21.0",
+    "@libsql/client": "^0.14.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
