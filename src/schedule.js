@@ -20,8 +20,10 @@ import {
   insertQuiz,
   markQuizDelivered,
   incrementProfileCounter,
+  getManualFactState,
+  setManualFactSent,
 } from './db.js';
-import { sendMessage, factKeyboard, quizKeyboard } from './telegram.js';
+import { sendMessage, factReplyKeyboard, quizReplyKeyboard } from './telegram.js';
 import { generateFact, generateQuiz } from './gemini.js';
 import { getPreferences } from './profile.js';
 import { generateWeeklyStats } from './stats.js';
@@ -34,8 +36,42 @@ export async function processSchedule() {
   // 2. Pošli remindery (1h+ bez odpovědi, jen pokud jsme stále ve stejném slotu)
   await sendReminders();
 
-  // 3. Projdi aktivní sloty a pošli co je potřeba
-  await processActiveSlots();
+  // 3. Manuální /new fact — pokud byl vyžádán, pošli a přeskoč slot v tomto ticku
+  const manualSent = await processManualFact();
+
+  // 4. Projdi aktivní sloty a pošli co je potřeba (pokud nebyl manuál)
+  if (!manualSent) {
+    await processActiveSlots();
+  } else {
+    console.log('Manuální fact odeslán — sloty přeskočeny v tomto ticku.');
+  }
+}
+
+/**
+ * Zkontroluje flag manual_fact_requested, pokud je 1 → vygeneruje a pošle fact.
+ * Nezapisuje do schedule_log. Vrací true pokud byl fact odeslán.
+ */
+async function processManualFact() {
+  const state = await getManualFactState();
+  if (!state.requested) return false;
+
+  console.log('Zpracovávám manuální /new fact...');
+
+  const preferences = await getPreferences();
+  const recent = await getRecentFacts(10);
+
+  const factData = await generateFact(preferences, recent);
+  const factId = await insertFact(factData.content, factData.category, factData.length);
+
+  const text = `💡 ${factData.category}\n\n${factData.content}`;
+  const msgId = await sendMessage(text, factReplyKeyboard());
+
+  await markFactDelivered(factId, msgId);
+  await incrementProfileCounter('total_facts_delivered');
+  await setManualFactSent(); // resetuje flag + zapíše čas
+
+  console.log(`Manuální fact #${factId} odeslán (${factData.category}).`);
+  return true;
 }
 
 /**
@@ -102,7 +138,7 @@ async function sendNewFact(key) {
 
   // Pošli přes Telegram
   const text = `💡 ${factData.category}\n\n${factData.content}`;
-  const msgId = await sendMessage(text, factKeyboard(factId));
+  const msgId = await sendMessage(text, factReplyKeyboard());
 
   // Označ jako doručený
   await markFactDelivered(factId, msgId);
@@ -160,7 +196,7 @@ async function sendQuizMessage(quizId, quizData) {
     .join('\n');
 
   const text = `🧠 Kvíz: pamatuješ si tohle?\n\n${quizData.question}\n\n${optionsText}`;
-  const msgId = await sendMessage(text, quizKeyboard(quizId));
+  const msgId = await sendMessage(text, quizReplyKeyboard());
 
   await markQuizDelivered(quizId, msgId);
   await incrementProfileCounter('total_quizzes_delivered');

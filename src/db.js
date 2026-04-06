@@ -78,6 +78,22 @@ export async function ensureSchema() {
     args: [],
   });
 
+  // Migrace: přidej sloupce pro /new command (bezpečné opakovat)
+  const alterColumns = [
+    `ALTER TABLE telegram_state ADD COLUMN manual_fact_requested INTEGER DEFAULT 0`,
+    `ALTER TABLE telegram_state ADD COLUMN manual_fact_last_sent TEXT`,
+  ];
+  for (const sql of alterColumns) {
+    try {
+      await client.execute(sql);
+    } catch (err) {
+      // Sloupec už existuje — ignoruj
+      if (!err.message.includes('duplicate column')) {
+        console.log(`ALTER ignorován: ${err.message}`);
+      }
+    }
+  }
+
   console.log('Schéma inicializováno.');
 }
 
@@ -92,6 +108,30 @@ export async function setLastUpdateId(updateId) {
   await client.execute({
     sql: 'UPDATE telegram_state SET last_update_id = ? WHERE id = 1',
     args: [updateId],
+  });
+}
+
+/** Vrátí stav manuálního fact requestu */
+export async function getManualFactState() {
+  const result = await client.execute('SELECT manual_fact_requested, manual_fact_last_sent FROM telegram_state WHERE id = 1');
+  const row = result.rows[0];
+  return {
+    requested: Number(row?.manual_fact_requested) === 1,
+    lastSent: row?.manual_fact_last_sent ?? null,
+  };
+}
+
+export async function setManualFactRequested(value) {
+  await client.execute({
+    sql: 'UPDATE telegram_state SET manual_fact_requested = ? WHERE id = 1',
+    args: [value ? 1 : 0],
+  });
+}
+
+export async function setManualFactSent() {
+  await client.execute({
+    sql: 'UPDATE telegram_state SET manual_fact_requested = 0, manual_fact_last_sent = ? WHERE id = 1',
+    args: [new Date().toISOString()],
   });
 }
 
@@ -282,6 +322,30 @@ export async function getFactsForNewQuiz() {
             AND f.id NOT IN (SELECT source_fact_id FROM quizzes)
           ORDER BY RANDOM() LIMIT 1`,
     args: [threeDaysAgo],
+  });
+  return result.rows[0] ?? null;
+}
+
+// ── Pending items (pro text-based poll) ─────────────────
+
+/** Nejnovější doručený fact čekající na rating */
+export async function getLatestPendingFact() {
+  const result = await client.execute({
+    sql: `SELECT * FROM facts
+          WHERE status = 'delivered' AND rating IS NULL
+          ORDER BY delivered_at DESC LIMIT 1`,
+    args: [],
+  });
+  return result.rows[0] ?? null;
+}
+
+/** Nejnovější doručený kvíz čekající na odpověď */
+export async function getLatestPendingQuiz() {
+  const result = await client.execute({
+    sql: `SELECT * FROM quizzes
+          WHERE status = 'delivered' AND user_answer_index IS NULL
+          ORDER BY delivered_at DESC LIMIT 1`,
+    args: [],
   });
   return result.rows[0] ?? null;
 }

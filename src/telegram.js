@@ -1,4 +1,4 @@
-// Telegram API helpery přes grammy
+// Telegram API helpery přes grammy — reply keyboard verze
 
 import { Api } from 'grammy';
 import { config } from './config.js';
@@ -7,27 +7,27 @@ const api = new Api(config.telegramBotToken);
 
 const CHAT_ID = config.telegramChatId;
 
-/** Pošle textovou zprávu s volitelnou inline klávesnicí */
-export async function sendMessage(text, inlineKeyboard = null) {
+/** Pošle textovou zprávu s volitelnou reply klávesnicí */
+export async function sendMessage(text, replyKeyboard = null) {
   const options = { parse_mode: 'HTML' };
-  if (inlineKeyboard) {
-    options.reply_markup = { inline_keyboard: inlineKeyboard };
+  if (replyKeyboard) {
+    options.reply_markup = replyKeyboard;
   }
   const msg = await api.sendMessage(CHAT_ID, text, options);
   return msg.message_id;
 }
 
-/** Odstraní inline klávesnici ze zprávy */
-export async function removeKeyboard(messageId) {
-  try {
-    await api.editMessageReplyMarkup(CHAT_ID, messageId, { reply_markup: { inline_keyboard: [] } });
-  } catch (err) {
-    // Zpráva mohla být smazána nebo klávesnice už neexistuje — ignoruj
-    console.log(`Nelze odebrat klávesnici z msg ${messageId}: ${err.message}`);
-  }
+/** Pošle zprávu a explicitně odstraní reply klávesnici */
+export async function sendMessageRemoveKeyboard(text) {
+  const options = {
+    parse_mode: 'HTML',
+    reply_markup: { remove_keyboard: true },
+  };
+  const msg = await api.sendMessage(CHAT_ID, text, options);
+  return msg.message_id;
 }
 
-/** Odpověď na callback query (potvrzení kliknutí na tlačítko) */
+/** Odpověď na callback query (legacy — jen aby neblokoval UI) */
 export async function answerCallbackQuery(callbackQueryId, text = '') {
   try {
     await api.answerCallbackQuery(callbackQueryId, { text });
@@ -41,41 +41,37 @@ export async function getUpdates(offset) {
   const updates = await api.getUpdates({
     offset,
     limit: 100,
-    timeout: 0, // nečekej, vrať co je
+    timeout: 0,
     allowed_updates: ['message', 'callback_query'],
   });
   return updates;
 }
 
-/** Inline klávesnice pro fact — řady: 1-5, 6-10, Víc|Už znám */
-export function factKeyboard(factId) {
-  return [
-    // Řada 1: tlačítka 1-5
-    [1, 2, 3, 4, 5].map(n => ({
-      text: String(n),
-      callback_data: `rate:${factId}:${n}`,
-    })),
-    // Řada 2: tlačítka 6-10
-    [6, 7, 8, 9, 10].map(n => ({
-      text: String(n),
-      callback_data: `rate:${factId}:${n}`,
-    })),
-    // Řada 3: Víc | Už znám
-    [
-      { text: '📖 Víc', callback_data: `more:${factId}` },
-      { text: '✓ Už znám', callback_data: `known:${factId}` },
+/** Reply klávesnice pro fact — rating 1-10, Víc, Už znám */
+export function factReplyKeyboard() {
+  return {
+    keyboard: [
+      [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }, { text: '5' }],
+      [{ text: '6' }, { text: '7' }, { text: '8' }, { text: '9' }, { text: '10' }],
+      [{ text: '📖 Víc' }],
+      [{ text: '✓ Už znám' }],
     ],
-  ];
+    one_time_keyboard: true,
+    resize_keyboard: true,
+    selective: false,
+  };
 }
 
-/** Inline klávesnice pro kvíz — A B C D */
-export function quizKeyboard(quizId) {
-  return [
-    ['A', 'B', 'C', 'D'].map((letter, i) => ({
-      text: letter,
-      callback_data: `quiz:${quizId}:${i}`,
-    })),
-  ];
+/** Reply klávesnice pro kvíz — A B C D */
+export function quizReplyKeyboard() {
+  return {
+    keyboard: [
+      [{ text: 'A' }, { text: 'B' }, { text: 'C' }, { text: 'D' }],
+    ],
+    one_time_keyboard: true,
+    resize_keyboard: true,
+    selective: false,
+  };
 }
 
 /** Kontrola jestli je chat ID autorizovaný */
