@@ -44,42 +44,63 @@ export function pragueWeekKey(date = new Date()) {
 }
 
 /**
- * Kontrola jestli je aktuální čas v okně ±5 minut od cílového času.
- * Vrací true pokud ano.
+ * Definice slotů — širší catch-up okna pro nespolehlivý GH Actions cron.
+ * Každý slot je aktivní od startH:startM do endH:endM (včetně).
  */
-export function isInTimeWindow(targetHour, targetMinute) {
+const SLOT_WINDOWS = [
+  { name: 'morning',   startH: 9,  startM: 0,  endH: 11, endM: 59 },
+  { name: 'noon',      startH: 12, startM: 0,  endH: 14, endM: 59 },
+  { name: 'afternoon', startH: 15, startM: 0,  endH: 19, endM: 59 },
+  { name: 'quiz',      startH: 20, startM: 0,  endH: 23, endM: 59 },
+  { name: 'weekly',    startH: 20, startM: 30, endH: 23, endM: 59 },
+];
+
+/**
+ * Vrátí pole názvů slotů aktivních právě teď (Prague TZ).
+ * Seřazené v pořadí morning → noon → afternoon → quiz → weekly.
+ * Weekly se vrací jen v neděli.
+ */
+export function getActiveSlots() {
   const { hour, minute } = pragueNow();
   const nowMins = hour * 60 + minute;
-  const targetMins = targetHour * 60 + targetMinute;
-  return Math.abs(nowMins - targetMins) <= 5;
+  const isSunday = pragueDayOfWeek() === 0;
+
+  const active = [];
+  for (const slot of SLOT_WINDOWS) {
+    if (slot.name === 'weekly' && !isSunday) continue;
+    const startMins = slot.startH * 60 + slot.startM;
+    const endMins = slot.endH * 60 + slot.endM;
+    if (nowMins >= startMins && nowMins <= endMins) {
+      active.push(slot.name);
+    }
+  }
+  return active;
 }
 
 /**
- * Detekuje aktuální slot na základě Prague času.
- * Vrací název slotu nebo null.
+ * Pro danou Prague hodinu a minutu vrátí název slotu, ve kterém se ten čas nachází.
+ * Slouží ke kontrole, jestli je doručená zpráva stále ve "svém" slotu (pro remindery).
+ * Vrací první odpovídající content slot (ne weekly).
  */
-export function detectSlot() {
-  const { hour, minute } = pragueNow();
-  const nowMins = hour * 60 + minute;
-
-  const slots = [
-    { name: 'morning', h: 9, m: 0 },
-    { name: 'noon', h: 12, m: 0 },
-    { name: 'afternoon', h: 15, m: 0 },
-    { name: 'quiz', h: 20, m: 0 },
-    { name: 'weekly', h: 20, m: 30 },
-  ];
-
-  for (const slot of slots) {
-    const targetMins = slot.h * 60 + slot.m;
-    if (Math.abs(nowMins - targetMins) <= 5) {
-      // Weekly slot platí jen v neděli
-      if (slot.name === 'weekly' && pragueDayOfWeek() !== 0) continue;
+export function getSlotForTime(hour, minute) {
+  const mins = hour * 60 + minute;
+  for (const slot of SLOT_WINDOWS) {
+    if (slot.name === 'weekly') continue; // weekly není content slot
+    const startMins = slot.startH * 60 + slot.startM;
+    const endMins = slot.endH * 60 + slot.endM;
+    if (mins >= startMins && mins <= endMins) {
       return slot.name;
     }
   }
-
   return null;
+}
+
+/**
+ * Vrátí aktuální content slot (bez weekly) — pro porovnání s delivery slotem.
+ */
+export function getCurrentContentSlot() {
+  const { hour, minute } = pragueNow();
+  return getSlotForTime(hour, minute);
 }
 
 /** Vrátí slot key pro dedup — např. "2026-04-06-morning" */

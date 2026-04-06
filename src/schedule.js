@@ -1,6 +1,6 @@
 // Plánovač — rozhoduje co poslat v aktuálním ticku
 
-import { detectSlot, slotKey } from './time.js';
+import { getActiveSlots, slotKey, getCurrentContentSlot, getSlotForTime, pragueNow } from './time.js';
 import {
   isSlotDone,
   markSlotDone,
@@ -17,7 +17,6 @@ import {
   markQuizMissed,
   getDueQuizzes,
   getFactsForNewQuiz,
-  getFactById,
   insertQuiz,
   markQuizDelivered,
   incrementProfileCounter,
@@ -32,31 +31,61 @@ export async function processSchedule() {
   // 1. Označ expired (3h+) fakty/kvízy jako missed
   await expireOldItems();
 
-  // 2. Pošli remindery (30min+ bez odpovědi)
+  // 2. Pošli remindery (1h+ bez odpovědi, jen pokud jsme stále ve stejném slotu)
   await sendReminders();
 
-  // 3. Detekuj aktuální slot a pošli obsah
-  const slot = detectSlot();
-  if (!slot) {
+  // 3. Projdi aktivní sloty a pošli co je potřeba
+  await processActiveSlots();
+}
+
+/**
+ * Catch-up logika: projde všechny právě aktivní sloty v pořadí,
+ * pošle max 1 content slot za tick (+ weekly jako výjimka navíc).
+ */
+async function processActiveSlots() {
+  const activeSlots = getActiveSlots();
+
+  if (activeSlots.length === 0) {
     console.log('Žádný aktivní slot.');
     return;
   }
 
-  const key = slotKey(slot);
-  if (await isSlotDone(key)) {
-    console.log(`Slot ${key} už byl odeslán.`);
-    return;
+  console.log(`Aktivní sloty: ${activeSlots.join(', ')}`);
+
+  let contentSent = false; // max 1 content zpráva (fact/kvíz) za tick
+
+  for (const slot of activeSlots) {
+    const key = slotKey(slot);
+
+    if (await isSlotDone(key)) {
+      continue; // už odesláno dneska/tento týden
+    }
+
+    // Weekly je výjimka — může přijít spolu s content zprávou
+    if (slot === 'weekly') {
+      await sendWeeklyStats(key);
+      continue;
+    }
+
+    // Content sloty: max 1 za tick
+    if (contentSent) {
+      console.log(`Slot ${slot} odložen na další tick (limit 1 content/tick).`);
+      continue;
+    }
+
+    console.log(`Zpracovávám slot: ${slot} (${key})`);
+
+    if (slot === 'quiz') {
+      await sendQuizOrFact(key);
+    } else {
+      await sendNewFact(key);
+    }
+
+    contentSent = true;
   }
 
-  console.log(`Aktivní slot: ${slot} (${key})`);
-
-  if (slot === 'weekly') {
-    await sendWeeklyStats(key);
-  } else if (slot === 'quiz') {
-    await sendQuizOrFact(key);
-  } else {
-    // morning, noon, afternoon — nový fact
-    await sendNewFact(key);
+  if (!contentSent && activeSlots.every(s => s === 'weekly')) {
+    console.log('Žádný nový content slot k odeslání.');
   }
 }
 
@@ -83,7 +112,7 @@ async function sendNewFact(key) {
   console.log(`Fact #${factId} odeslán (${factData.category}).`);
 }
 
-/** Ve 20:00 — pošle kvíz nebo fallback na nový fact */
+/** Ve quiz slotu — pošle kvíz nebo fallback na nový fact */
 async function sendQuizOrFact(key) {
   // Priorita 1: Existující kvízy k opakování (spaced repetition)
   const dueQuizzes = await getDueQuizzes();
@@ -147,23 +176,60 @@ async function sendWeeklyStats(key) {
   console.log('Týdenní statistika odeslána.');
 }
 
-/** Pošle remindery pro nehodnocené fakty a nezodpovězené kvízy */
+/**
+ * Pošle remindery — jen pokud jsme stále ve stejném slotu jako doručení.
+ * Zjistí Prague čas doručení, určí v jakém slotu to bylo,
+ * a porovná s aktuálním content slotem.
+ */
 async function sendReminders() {
+  const currentSlot = getCurrentContentSlot();
+
   // Remindery pro fakty
   const unratedFacts = await getUnratedFactsNeedingReminder();
   for (const fact of unratedFacts) {
-    await sendMessage('⏰ Ještě jsi nehodnotil poslední zprávu');
-    await setFactReminderSent(fact.id);
-    console.log(`Reminder odeslán pro fact #${fact.id}`);
+    if (isStillInDeliverySlot(fact.delivered_at, currentSlot)) {
+      await sendMessage('⏰ Ještě jsi nehodnotil poslední zprávu');
+      await setFactReminderSent(fact.id);
+      console.log(`Reminder odeslán pro fact #${fact.id}`);
+    } else {
+      console.log(`Fact #${fact.id}: reminder přeskočen (jiný slot).`);
+    }
   }
 
   // Remindery pro kvízy
   const unratedQuizzes = await getUnratedQuizzesNeedingReminder();
   for (const quiz of unratedQuizzes) {
-    await sendMessage('⏰ Ještě jsi neodpověděl na kvíz');
-    await setQuizReminderSent(quiz.id);
-    console.log(`Reminder odeslán pro kvíz #${quiz.id}`);
+    if (isStillInDeliverySlot(quiz.delivered_at, currentSlot)) {
+      await sendMessage('⏰ Ještě jsi neodpověděl na kvíz');
+      await setQuizReminderSent(quiz.id);
+      console.log(`Reminder odeslán pro kvíz #${quiz.id}`);
+    } else {
+      console.log(`Kvíz #${quiz.id}: reminder přeskočen (jiný slot).`);
+    }
   }
+}
+
+/**
+ * Kontrola jestli je aktuální content slot stejný jako slot,
+ * ve kterém byla zpráva doručena.
+ */
+function isStillInDeliverySlot(deliveredAtISO, currentSlot) {
+  if (!currentSlot) return false; // jsme mimo jakýkoliv slot (např. před 9:00)
+
+  // Převeď delivered_at UTC čas na Prague hodinu a minutu
+  const deliveredDate = new Date(deliveredAtISO);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Prague',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(deliveredDate);
+
+  const deliveredHour = Number(parts.find(p => p.type === 'hour').value);
+  const deliveredMinute = Number(parts.find(p => p.type === 'minute').value);
+  const deliverySlot = getSlotForTime(deliveredHour, deliveredMinute);
+
+  return deliverySlot === currentSlot;
 }
 
 /** Označ staré nehodnocené položky jako missed */

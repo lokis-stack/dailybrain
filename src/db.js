@@ -166,14 +166,14 @@ export async function getRecentFacts(limit = 10) {
   return result.rows.map(r => r.content);
 }
 
-/** Fakty doručené před víc než 30 min bez ratingu a bez reminderu */
+/** Fakty doručené před víc než 1 hodinu bez ratingu a bez reminderu */
 export async function getUnratedFactsNeedingReminder() {
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const result = await client.execute({
     sql: `SELECT * FROM facts
           WHERE status = 'delivered' AND rating IS NULL
             AND reminder_sent = 0 AND delivered_at < ?`,
-    args: [thirtyMinAgo],
+    args: [oneHourAgo],
   });
   return result.rows;
 }
@@ -233,12 +233,12 @@ export async function setQuizReminderSent(quizId) {
 }
 
 export async function getUnratedQuizzesNeedingReminder() {
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const result = await client.execute({
     sql: `SELECT * FROM quizzes
           WHERE status = 'delivered' AND user_answer_index IS NULL
             AND reminder_sent = 0 AND delivered_at < ?`,
-    args: [thirtyMinAgo],
+    args: [oneHourAgo],
   });
   return result.rows;
 }
