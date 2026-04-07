@@ -19,34 +19,30 @@ function parseJSON(text) {
 }
 
 /**
- * Vygeneruje nový fact na základě preferencí a historie.
+ * Vygeneruje nový fact.
  * @param {object} preferences - {category: {avg_rating, count}}
  * @param {string[]} recentFacts - posledních 10 factů (zkrácené)
+ * @param {string} forcedCategory - kategorie vybraná pickCategory()
  * @returns {{ content: string, category: string, length: string }}
  */
-export async function generateFact(preferences, recentFacts) {
-  const prefsStr = JSON.stringify(preferences, null, 2);
+export async function generateFact(preferences, recentFacts, forcedCategory) {
   const recentStr = recentFacts.map(f => f.substring(0, 100)).join('\n- ');
 
   const systemPrompt = `Jsi kurátor denních zajímavostí pro zvídavého člověka. Píšeš česky, stručně, konkrétně, bez vaty. Vyhýbáš se obecným floskulím a všeobecně známým věcem. Preferuješ překvapivé, ověřené, konkrétní informace s čísly, jmény nebo daty.`;
 
-  const userPrompt = `Oblíbená témata uživatele: psychologie a mozek, filozofie a myšlení, ekonomie a byznys, příroda a vesmír, věda a technika, historie a kultura.
-
-Aktuální preference (průměrná hodnocení po kategoriích):
-${prefsStr}
+  const userPrompt = `Vygeneruj zajímavý fact PŘÍMO z kategorie: ${forcedCategory}. Téma musí být z této kategorie, nepodvádět.
 
 Posledních 10 factů které už dostal (NEOPAKUJ tyto ani hodně podobné):
 - ${recentStr || 'žádné zatím'}
 
-Vygeneruj 1 NOVÝ zajímavý fact. Sleduj tato pravidla:
+Pravidla:
 - Jazyk: čeština
-- Délka: vyber sám podle tématu — "short" (1-2 věty) pro jednoduché fakty, "medium" (3-4 věty) pro většinu, "long" (5-7 vět) pro fakty co potřebují kontext
-- S mírným sklonem k tématům s vyšším průměrným hodnocením, ale občas (cca 1 z 5) vyber i téma s nižším hodnocením pro diverzitu
+- Délka: vyber sám — "short" (1-2 věty) pro jednoduché fakty, "medium" (3-4 věty) pro většinu, "long" (5-7 vět) pro fakty co potřebují kontext
 - Musí být konkrétní, ne obecný ("Mozek má 86 miliard neuronů a spotřebuje 20% energie těla" ANO; "Mozek je složitý orgán" NE)
 - Ne klišé, ne všeobecně známé věci
 
 Vrať POUZE validní JSON (žádný markdown, žádné \`\`\`), ve formátu:
-{"content": "text factu", "category": "jedno z: psychologie | filozofie | ekonomie | příroda | věda | historie", "length": "short|medium|long"}`;
+{"content": "text factu", "category": "${forcedCategory}", "length": "short|medium|long"}`;
 
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -55,7 +51,10 @@ Vrať POUZE validní JSON (žádný markdown, žádné \`\`\`), ve formátu:
 
   const text = result.response.text();
   console.log('Gemini fact response:', text.substring(0, 200));
-  return parseJSON(text);
+  const parsed = parseJSON(text);
+  // Pro jistotu přepiš kategorii na tu co jsme chtěli
+  parsed.category = forcedCategory;
+  return parsed;
 }
 
 /**

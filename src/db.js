@@ -94,6 +94,47 @@ export async function ensureSchema() {
     }
   }
 
+  // Migrace: normalizuj kategorie na velké první písmeno
+  const categoryMap = [
+    ['psychologie', 'Psychologie'],
+    ['filozofie', 'Filozofie'],
+    ['ekonomie', 'Ekonomie'],
+    ['příroda', 'Příroda'],
+    ['věda', 'Věda'],
+    ['historie', 'Historie'],
+  ];
+  for (const [lower, proper] of categoryMap) {
+    await client.execute({
+      sql: `UPDATE facts SET category = ? WHERE category = ?`,
+      args: [proper, lower],
+    });
+  }
+
+  // Normalizuj klíče v user_profile.preferences_json
+  try {
+    const profileResult = await client.execute('SELECT preferences_json FROM user_profile WHERE id = 1');
+    const row = profileResult.rows[0];
+    if (row && row.preferences_json) {
+      const prefs = JSON.parse(row.preferences_json);
+      const normalized = {};
+      let changed = false;
+      for (const [key, value] of Object.entries(prefs)) {
+        const match = categoryMap.find(([l]) => l === key.toLowerCase());
+        const properKey = match ? match[1] : key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
+        if (properKey !== key) changed = true;
+        normalized[properKey] = value;
+      }
+      if (changed) {
+        await client.execute({
+          sql: 'UPDATE user_profile SET preferences_json = ? WHERE id = 1',
+          args: [JSON.stringify(normalized)],
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`Normalizace preferencí: ${err.message}`);
+  }
+
   console.log('Schéma inicializováno.');
 }
 
@@ -204,6 +245,15 @@ export async function getRecentFacts(limit = 10) {
     args: [limit],
   });
   return result.rows.map(r => r.content);
+}
+
+/** Vrátí kategorie posledních N doručených factů (pro recency penalty) */
+export async function getRecentCategories(limit = 5) {
+  const result = await client.execute({
+    sql: 'SELECT category FROM facts WHERE delivered_at IS NOT NULL ORDER BY delivered_at DESC LIMIT ?',
+    args: [limit],
+  });
+  return result.rows.map(r => r.category);
 }
 
 /** Fakty doručené před víc než 1 hodinu bez ratingu a bez reminderu */

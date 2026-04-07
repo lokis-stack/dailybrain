@@ -25,7 +25,7 @@ import {
 } from './db.js';
 import { sendMessage, factReplyKeyboard, quizReplyKeyboard } from './telegram.js';
 import { generateFact, generateQuiz } from './gemini.js';
-import { getPreferences } from './profile.js';
+import { getPreferences, pickCategory, normalizeCategory } from './profile.js';
 import { generateWeeklyStats } from './stats.js';
 
 /** Hlavní funkce — spouští se každý tick */
@@ -57,20 +57,22 @@ async function processManualFact() {
 
   console.log('Zpracovávám manuální /new fact...');
 
+  const category = await pickCategory();
   const preferences = await getPreferences();
   const recent = await getRecentFacts(10);
 
-  const factData = await generateFact(preferences, recent);
-  const factId = await insertFact(factData.content, factData.category, factData.length);
+  const factData = await generateFact(preferences, recent, category);
+  const cat = normalizeCategory(factData.category);
+  const factId = await insertFact(factData.content, cat, factData.length);
 
-  const text = `💡 ${factData.category}\n\n${factData.content}`;
+  const text = `💡 ${cat}\n\n${factData.content}`;
   const msgId = await sendMessage(text, factReplyKeyboard());
 
   await markFactDelivered(factId, msgId);
   await incrementProfileCounter('total_facts_delivered');
-  await setManualFactSent(); // resetuje flag + zapíše čas
+  await setManualFactSent();
 
-  console.log(`Manuální fact #${factId} odeslán (${factData.category}).`);
+  console.log(`Manuální fact #${factId} odeslán (${cat}).`);
   return true;
 }
 
@@ -127,17 +129,19 @@ async function processActiveSlots() {
 
 /** Pošle nový fact vygenerovaný Gemini */
 async function sendNewFact(key) {
+  const category = await pickCategory();
   const preferences = await getPreferences();
   const recent = await getRecentFacts(10);
 
   console.log('Generuji nový fact...');
-  const factData = await generateFact(preferences, recent);
+  const factData = await generateFact(preferences, recent, category);
+  const cat = normalizeCategory(factData.category);
 
   // Ulož do DB
-  const factId = await insertFact(factData.content, factData.category, factData.length);
+  const factId = await insertFact(factData.content, cat, factData.length);
 
   // Pošli přes Telegram
-  const text = `💡 ${factData.category}\n\n${factData.content}`;
+  const text = `💡 ${cat}\n\n${factData.content}`;
   const msgId = await sendMessage(text, factReplyKeyboard());
 
   // Označ jako doručený
@@ -145,7 +149,7 @@ async function sendNewFact(key) {
   await incrementProfileCounter('total_facts_delivered');
   await markSlotDone(key);
 
-  console.log(`Fact #${factId} odeslán (${factData.category}).`);
+  console.log(`Fact #${factId} odeslán (${cat}).`);
 }
 
 /** Ve quiz slotu — pošle kvíz nebo fallback na nový fact */

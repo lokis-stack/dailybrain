@@ -7,12 +7,13 @@ import {
   getWeeklyTopCategories,
   getAllTimeTopCategories,
 } from './db.js';
+import { normalizeCategory } from './profile.js';
 
 /** Formátuje top kategorie do textu */
 function formatTopCategories(categories) {
   if (!categories || categories.length === 0) return 'Zatím nedostatek dat.';
   return categories
-    .map((c, i) => `${i + 1}. ${c.category} (${Number(c.avg_rating).toFixed(1)})`)
+    .map((c, i) => `${i + 1}. ${normalizeCategory(c.category)} (${Number(c.avg_rating).toFixed(1)})`)
     .join('\n');
 }
 
