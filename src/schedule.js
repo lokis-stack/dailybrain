@@ -16,7 +16,9 @@ import {
   markFactMissed,
   markQuizMissed,
   getDueQuizzes,
-  getFactsForNewQuiz,
+  getFactForQuiz,
+  getPreviousQuizQuestions,
+  getAllFactContents,
   insertQuiz,
   markQuizDelivered,
   incrementProfileCounter,
@@ -27,6 +29,60 @@ import { sendMessage, factReplyKeyboard, quizReplyKeyboard } from './telegram.js
 import { generateFact, generateQuiz } from './gemini.js';
 import { getPreferences, pickCategory, normalizeCategory } from './profile.js';
 import { generateWeeklyStats } from './stats.js';
+
+// ── Similarity check ────────────────────────────────────
+
+/**
+ * Odstraní diakritiku a vrátí lowercase slova delší než 4 znaky.
+ */
+function extractKeywords(text) {
+  const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const words = normalized.match(/[a-z0-9]+/g) || [];
+  return [...new Set(words.filter(w => w.length > 4))];
+}
+
+/**
+ * Kontrola similarity nového factu proti existujícím.
+ * Vrací true pokud se 3+ klíčová slova shodují s jakýmkoliv existujícím factem.
+ */
+function isDuplicate(newContent, existingContents) {
+  const newKeywords = extractKeywords(newContent);
+  for (const existing of existingContents) {
+    const existingKeywords = extractKeywords(existing);
+    const overlap = newKeywords.filter(k => existingKeywords.includes(k));
+    if (overlap.length >= 3) {
+      return { duplicate: true, matchedWith: existing.substring(0, 80), overlap };
+    }
+  }
+  return { duplicate: false };
+}
+
+/**
+ * Vygeneruje fact s deduplikací — max 3 pokusy.
+ * Vrací factData (content, category, length).
+ */
+async function generateFactWithDedup(category) {
+  const preferences = await getPreferences();
+  const recent = await getRecentFacts(50);
+  const allContents = await getAllFactContents();
+
+  let factData = await generateFact(preferences, recent, category);
+  let check = isDuplicate(factData.content, allContents);
+
+  for (let attempt = 2; attempt <= 3 && check.duplicate; attempt++) {
+    console.log(`Duplicitní fact detekován (shoda: ${check.overlap.join(', ')}), generuji znovu (pokus ${attempt}/3)...`);
+    factData = await generateFact(preferences, recent, category, factData.content);
+    check = isDuplicate(factData.content, allContents);
+  }
+
+  if (check.duplicate) {
+    console.log(`Fact stále podobný po 3 pokusech — posílám i tak.`);
+  }
+
+  return factData;
+}
+
+// ── Hlavní logika ───────────────────────────────────────
 
 /** Hlavní funkce — spouští se každý tick */
 export async function processSchedule() {
@@ -58,10 +114,7 @@ async function processManualFact() {
   console.log('Zpracovávám manuální /new fact...');
 
   const category = await pickCategory();
-  const preferences = await getPreferences();
-  const recent = await getRecentFacts(10);
-
-  const factData = await generateFact(preferences, recent, category);
+  const factData = await generateFactWithDedup(category);
   const cat = normalizeCategory(factData.category);
   const factId = await insertFact(factData.content, cat, factData.length);
 
@@ -90,22 +143,20 @@ async function processActiveSlots() {
 
   console.log(`Aktivní sloty: ${activeSlots.join(', ')}`);
 
-  let contentSent = false; // max 1 content zpráva (fact/kvíz) za tick
+  let contentSent = false;
 
   for (const slot of activeSlots) {
     const key = slotKey(slot);
 
     if (await isSlotDone(key)) {
-      continue; // už odesláno dneska/tento týden
+      continue;
     }
 
-    // Weekly je výjimka — může přijít spolu s content zprávou
     if (slot === 'weekly') {
       await sendWeeklyStats(key);
       continue;
     }
 
-    // Content sloty: max 1 za tick
     if (contentSent) {
       console.log(`Slot ${slot} odložen na další tick (limit 1 content/tick).`);
       continue;
@@ -127,24 +178,19 @@ async function processActiveSlots() {
   }
 }
 
-/** Pošle nový fact vygenerovaný Gemini */
+/** Pošle nový fact vygenerovaný Gemini s deduplikací */
 async function sendNewFact(key) {
   const category = await pickCategory();
-  const preferences = await getPreferences();
-  const recent = await getRecentFacts(10);
 
   console.log('Generuji nový fact...');
-  const factData = await generateFact(preferences, recent, category);
+  const factData = await generateFactWithDedup(category);
   const cat = normalizeCategory(factData.category);
 
-  // Ulož do DB
   const factId = await insertFact(factData.content, cat, factData.length);
 
-  // Pošli přes Telegram
   const text = `💡 ${cat}\n\n${factData.content}`;
   const msgId = await sendMessage(text, factReplyKeyboard());
 
-  // Označ jako doručený
   await markFactDelivered(factId, msgId);
   await incrementProfileCounter('total_facts_delivered');
   await markSlotDone(key);
@@ -159,7 +205,8 @@ async function sendQuizOrFact(key) {
   if (dueQuizzes.length > 0) {
     const due = dueQuizzes[0];
     console.log(`Regeneruji kvíz pro fact #${due.source_fact_id}...`);
-    const quizData = await generateQuiz(due.fact_content);
+    const prevQuestions = await getPreviousQuizQuestions(due.source_fact_id);
+    const quizData = await generateQuiz(due.fact_content, prevQuestions);
     const quizId = await insertQuiz(
       due.source_fact_id,
       quizData.question,
@@ -171,11 +218,12 @@ async function sendQuizOrFact(key) {
     return;
   }
 
-  // Priorita 2: Nový kvíz z nekvízovaného factu
-  const factForQuiz = await getFactsForNewQuiz();
+  // Priorita 2: Nový kvíz z factu (s vyloučením nedávných source_fact_id)
+  const factForQuiz = await getFactForQuiz();
   if (factForQuiz) {
     console.log(`Generuji nový kvíz z fact #${factForQuiz.id}...`);
-    const quizData = await generateQuiz(factForQuiz.content);
+    const prevQuestions = await getPreviousQuizQuestions(factForQuiz.id);
+    const quizData = await generateQuiz(factForQuiz.content, prevQuestions);
     const quizId = await insertQuiz(
       factForQuiz.id,
       quizData.question,
@@ -218,13 +266,10 @@ async function sendWeeklyStats(key) {
 
 /**
  * Pošle remindery — jen pokud jsme stále ve stejném slotu jako doručení.
- * Zjistí Prague čas doručení, určí v jakém slotu to bylo,
- * a porovná s aktuálním content slotem.
  */
 async function sendReminders() {
   const currentSlot = getCurrentContentSlot();
 
-  // Remindery pro fakty
   const unratedFacts = await getUnratedFactsNeedingReminder();
   for (const fact of unratedFacts) {
     if (isStillInDeliverySlot(fact.delivered_at, currentSlot)) {
@@ -236,7 +281,6 @@ async function sendReminders() {
     }
   }
 
-  // Remindery pro kvízy
   const unratedQuizzes = await getUnratedQuizzesNeedingReminder();
   for (const quiz of unratedQuizzes) {
     if (isStillInDeliverySlot(quiz.delivered_at, currentSlot)) {
@@ -249,14 +293,9 @@ async function sendReminders() {
   }
 }
 
-/**
- * Kontrola jestli je aktuální content slot stejný jako slot,
- * ve kterém byla zpráva doručena.
- */
 function isStillInDeliverySlot(deliveredAtISO, currentSlot) {
-  if (!currentSlot) return false; // jsme mimo jakýkoliv slot (např. před 9:00)
+  if (!currentSlot) return false;
 
-  // Převeď delivered_at UTC čas na Prague hodinu a minutu
   const deliveredDate = new Date(deliveredAtISO);
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/Prague',

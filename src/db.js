@@ -363,17 +363,58 @@ export async function getDueQuizzes() {
   return result.rows;
 }
 
-/** Fakty starší 3 dny s ratingem, ze kterých ještě nebyl kvíz */
-export async function getFactsForNewQuiz() {
-  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-  const result = await client.execute({
+/**
+ * Vybere fact pro nový kvíz — ohodnocený, starší 2 dny,
+ * vyloučí source_fact_id posledních N kvízů aby se neopakovaly.
+ */
+export async function getFactForQuiz() {
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Nejdřív zkus vyloučit posledních 5 source_fact_id
+  let result = await client.execute({
     sql: `SELECT f.* FROM facts f
-          WHERE f.rating IS NOT NULL AND f.created_at < ?
-            AND f.id NOT IN (SELECT source_fact_id FROM quizzes)
+          WHERE f.rating IS NOT NULL AND f.status = 'rated' AND f.created_at < ?
+            AND f.id NOT IN (
+              SELECT DISTINCT source_fact_id FROM quizzes
+              ORDER BY created_at DESC LIMIT 5
+            )
           ORDER BY RANDOM() LIMIT 1`,
-    args: [threeDaysAgo],
+    args: [twoDaysAgo],
   });
+
+  if (result.rows.length > 0) return result.rows[0];
+
+  // Fallback: vyloučit jen posledních 3
+  result = await client.execute({
+    sql: `SELECT f.* FROM facts f
+          WHERE f.rating IS NOT NULL AND f.status = 'rated' AND f.created_at < ?
+            AND f.id NOT IN (
+              SELECT DISTINCT source_fact_id FROM quizzes
+              ORDER BY created_at DESC LIMIT 3
+            )
+          ORDER BY RANDOM() LIMIT 1`,
+    args: [twoDaysAgo],
+  });
+
   return result.rows[0] ?? null;
+}
+
+/** Vrátí předchozí kvízové otázky pro daný source fact (pro dedup v Gemini) */
+export async function getPreviousQuizQuestions(sourceFactId) {
+  const result = await client.execute({
+    sql: 'SELECT question FROM quizzes WHERE source_fact_id = ? ORDER BY created_at DESC LIMIT 5',
+    args: [sourceFactId],
+  });
+  return result.rows.map(r => r.question);
+}
+
+/** Vrátí všechny content stringy z tabulky facts (pro similarity check) */
+export async function getAllFactContents() {
+  const result = await client.execute({
+    sql: 'SELECT content FROM facts',
+    args: [],
+  });
+  return result.rows.map(r => r.content);
 }
 
 // ── Pending items (pro text-based poll) ─────────────────

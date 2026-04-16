@@ -11,7 +11,6 @@ const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
  */
 function parseJSON(text) {
   let cleaned = text.trim();
-  // Odstraň markdown code block obal
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```$/, '');
   }
@@ -21,25 +20,34 @@ function parseJSON(text) {
 /**
  * Vygeneruje nový fact.
  * @param {object} preferences - {category: {avg_rating, count}}
- * @param {string[]} recentFacts - posledních 10 factů (zkrácené)
+ * @param {string[]} recentFacts - posledních 50 factů (plný text)
  * @param {string} forcedCategory - kategorie vybraná pickCategory()
+ * @param {string} [excludeContent] - konkrétní fact co se NESMÍ opakovat (retry po duplicitě)
  * @returns {{ content: string, category: string, length: string }}
  */
-export async function generateFact(preferences, recentFacts, forcedCategory) {
-  const recentStr = recentFacts.map(f => f.substring(0, 100)).join('\n- ');
+export async function generateFact(preferences, recentFacts, forcedCategory, excludeContent = null) {
+  const recentStr = recentFacts.map((f, i) => `${i + 1}. ${f}`).join('\n');
 
-  const systemPrompt = `Jsi kurátor denních zajímavostí pro zvídavého člověka. Píšeš česky, stručně, konkrétně, bez vaty. Vyhýbáš se obecným floskulím a všeobecně známým věcem. Preferuješ překvapivé, ověřené, konkrétní informace s čísly, jmény nebo daty.`;
+  const systemPrompt = `Jsi kurátor denních zajímavostí pro zvídavého člověka. Píšeš česky, stručně, konkrétně, bez vaty. Vyhýbáš se obecným floskulím a všeobecně známým věcem. Preferuješ překvapivé, ověřené, konkrétní informace s čísly, jmény nebo daty.
+
+KRITICKÉ: Nesmíš opakovat ani parafrázovat žádný z uvedených factů. Každý fact musí být o ÚPLNĚ JINÉM tématu, události nebo jevu. Pokud ti dojdou nápady v dané kategorii, zvol úplně jinou podoblast.`;
+
+  let excludeNote = '';
+  if (excludeContent) {
+    excludeNote = `\n\nTento fact NESMÍŠ generovat (je duplicitní): "${excludeContent}"\nVygeneruj KOMPLETNĚ JINÝ fact o jiném tématu/jevu.`;
+  }
 
   const userPrompt = `Vygeneruj zajímavý fact PŘÍMO z kategorie: ${forcedCategory}. Téma musí být z této kategorie, nepodvádět.
 
-Posledních 10 factů které už dostal (NEOPAKUJ tyto ani hodně podobné):
-- ${recentStr || 'žádné zatím'}
+Všechny dosud poslané facty (NEOPAKUJ žádný z nich, ani podobný):
+${recentStr || 'žádné zatím'}${excludeNote}
 
 Pravidla:
 - Jazyk: čeština
 - Délka: vyber sám — "short" (1-2 věty) pro jednoduché fakty, "medium" (3-4 věty) pro většinu, "long" (5-7 vět) pro fakty co potřebují kontext
 - Musí být konkrétní, ne obecný ("Mozek má 86 miliard neuronů a spotřebuje 20% energie těla" ANO; "Mozek je složitý orgán" NE)
 - Ne klišé, ne všeobecně známé věci
+- Musí být o JINÉM tématu než jakýkoliv z výše uvedených factů
 
 Vrať POUZE validní JSON (žádný markdown, žádné \`\`\`), ve formátu:
 {"content": "text factu", "category": "${forcedCategory}", "length": "short|medium|long"}`;
@@ -52,7 +60,6 @@ Vrať POUZE validní JSON (žádný markdown, žádné \`\`\`), ve formátu:
   const text = result.response.text();
   console.log('Gemini fact response:', text.substring(0, 200));
   const parsed = parseJSON(text);
-  // Pro jistotu přepiš kategorii na tu co jsme chtěli
   parsed.category = forcedCategory;
   return parsed;
 }
@@ -60,12 +67,19 @@ Vrať POUZE validní JSON (žádný markdown, žádné \`\`\`), ve formátu:
 /**
  * Vygeneruje kvíz z daného factu.
  * @param {string} factContent
+ * @param {string[]} previousQuestions - předchozí otázky ze stejného factu (pro dedup)
  * @returns {{ question: string, options: string[], correct_index: number }}
  */
-export async function generateQuiz(factContent) {
+export async function generateQuiz(factContent, previousQuestions = []) {
+  let prevNote = '';
+  if (previousQuestions.length > 0) {
+    const prevStr = previousQuestions.map((q, i) => `${i + 1}. "${q}"`).join('\n');
+    prevNote = `\n\nTyto otázky už byly použity — vygeneruj ODLIŠNOU otázku (jiná formulace, jiný úhel pohledu, jiné distraktory):\n${prevStr}`;
+  }
+
   const prompt = `Z tohoto factu vytvoř kvízovou otázku s 4 možnostmi (A, B, C, D). 1 správná odpověď, 3 lákavé ale jednoznačně špatné distraktory. Otázka musí být zodpověditelná jen ze znalosti toho factu. Čeština.
 
-Fact: "${factContent}"
+Fact: "${factContent}"${prevNote}
 
 Vrať POUZE validní JSON:
 {"question": "otázka", "options": ["možnost A", "možnost B", "možnost C", "možnost D"], "correct_index": 0}`;
