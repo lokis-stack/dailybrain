@@ -256,6 +256,15 @@ export async function getRecentCategories(limit = 5) {
   return result.rows.map(r => r.category);
 }
 
+/** Vrátí délky posledních N doručených factů (pro rotaci short/medium/long) */
+export async function getRecentLengths(limit = 5) {
+  const result = await client.execute({
+    sql: 'SELECT length FROM facts WHERE delivered_at IS NOT NULL ORDER BY delivered_at DESC LIMIT ?',
+    args: [limit],
+  });
+  return result.rows.map(r => r.length);
+}
+
 /** Fakty doručené před víc než 1 hodinu bez ratingu a bez reminderu */
 export async function getUnratedFactsNeedingReminder() {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -350,16 +359,41 @@ export async function markQuizMissed(quizId) {
   });
 }
 
-/** Kvízy s next_review_at <= teď (pro spaced repetition) */
+/**
+ * Kvízy s next_review_at <= teď (pro spaced repetition).
+ * Vyloučí source_fact_id posledních 3 odeslaných kvízů, aby se neopakoval
+ * pořád stejný fact. Pokud vše vyfiltrováno, fallback na posledních 2.
+ */
 export async function getDueQuizzes() {
   const now = new Date().toISOString();
-  const result = await client.execute({
+
+  let result = await client.execute({
     sql: `SELECT q.*, f.content as fact_content FROM quizzes q
           JOIN facts f ON f.id = q.source_fact_id
           WHERE q.status = 'answered' AND q.next_review_at <= ?
+            AND q.source_fact_id NOT IN (
+              SELECT DISTINCT source_fact_id FROM quizzes
+              ORDER BY created_at DESC LIMIT 3
+            )
           ORDER BY q.next_review_at ASC LIMIT 5`,
     args: [now],
   });
+
+  if (result.rows.length > 0) return result.rows;
+
+  // Fallback: vyloučit jen posledních 2
+  result = await client.execute({
+    sql: `SELECT q.*, f.content as fact_content FROM quizzes q
+          JOIN facts f ON f.id = q.source_fact_id
+          WHERE q.status = 'answered' AND q.next_review_at <= ?
+            AND q.source_fact_id NOT IN (
+              SELECT DISTINCT source_fact_id FROM quizzes
+              ORDER BY created_at DESC LIMIT 2
+            )
+          ORDER BY q.next_review_at ASC LIMIT 5`,
+    args: [now],
+  });
+
   return result.rows;
 }
 

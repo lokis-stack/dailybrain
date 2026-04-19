@@ -1,9 +1,24 @@
 // Správa uživatelského profilu, preferencí a výběru kategorií
 
-import { getUserProfile, updateUserProfile, incrementProfileCounter, getRecentCategories } from './db.js';
+import { getUserProfile, updateUserProfile, incrementProfileCounter, getRecentCategories, getRecentLengths } from './db.js';
 
 /** Kanonický seznam kategorií (vždy s velkým písmenem) */
-export const CATEGORIES = ['Psychologie', 'Filozofie', 'Ekonomie', 'Příroda', 'Věda', 'Historie'];
+export const CATEGORIES = [
+  'Psychologie',
+  'Filozofie',
+  'Ekonomie',
+  'Příroda',
+  'Věda',
+  'Historie',
+  'Umění',
+  'Technologie',
+  'Medicína',
+  'Geografie',
+  'Sociologie',
+  'Jazyky',
+  'Matematika',
+  'Hudba',
+];
 
 /**
  * Normalizuje kategorii na kanonický tvar (velké první písmeno).
@@ -97,4 +112,37 @@ export async function pickCategory() {
 
   // Fallback (nemělo by nastat)
   return weights[weights.length - 1].category;
+}
+
+/**
+ * Vybere délku factu váženým náhodným výběrem s ohledem na posledních 5 factů.
+ * Cílem je rotovat short / medium / long a neposílat pořád jen medium.
+ * Target rozložení: short 30 %, medium 40 %, long 30 %.
+ */
+export async function pickLength() {
+  const recentLengths = await getRecentLengths(5);
+  const lengths = ['short', 'medium', 'long'];
+  const baseTargets = { short: 0.3, medium: 0.4, long: 0.3 };
+
+  const weights = lengths.map(len => {
+    const base = baseTargets[len];
+    const recentCount = recentLengths.filter(l => l === len).length;
+    // Penalizace za opakování: každý výskyt v posledních 5 = -0.15
+    const weight = Math.max(0.1, base - recentCount * 0.15);
+    return { length: len, weight };
+  });
+
+  const totalWeight = weights.reduce((sum, w) => sum + w.weight, 0);
+  let random = Math.random() * totalWeight;
+
+  for (const w of weights) {
+    random -= w.weight;
+    if (random <= 0) {
+      const pct = ((w.weight / totalWeight) * 100).toFixed(1);
+      console.log(`Vybraná délka: ${w.length} (šance ${pct}%, nedávno: ${recentLengths.join(',') || 'nic'})`);
+      return w.length;
+    }
+  }
+
+  return 'medium';
 }

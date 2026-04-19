@@ -27,7 +27,7 @@ import {
 } from './db.js';
 import { sendMessage, factReplyKeyboard, quizReplyKeyboard } from './telegram.js';
 import { generateFact, generateQuiz } from './gemini.js';
-import { getPreferences, pickCategory, normalizeCategory } from './profile.js';
+import { getPreferences, pickCategory, pickLength, normalizeCategory } from './profile.js';
 import { generateWeeklyStats } from './stats.js';
 
 // ── Similarity check ────────────────────────────────────
@@ -61,17 +61,17 @@ function isDuplicate(newContent, existingContents) {
  * Vygeneruje fact s deduplikací — max 3 pokusy.
  * Vrací factData (content, category, length).
  */
-async function generateFactWithDedup(category) {
+async function generateFactWithDedup(category, length) {
   const preferences = await getPreferences();
   const recent = await getRecentFacts(50);
   const allContents = await getAllFactContents();
 
-  let factData = await generateFact(preferences, recent, category);
+  let factData = await generateFact(preferences, recent, category, length);
   let check = isDuplicate(factData.content, allContents);
 
   for (let attempt = 2; attempt <= 3 && check.duplicate; attempt++) {
     console.log(`Duplicitní fact detekován (shoda: ${check.overlap.join(', ')}), generuji znovu (pokus ${attempt}/3)...`);
-    factData = await generateFact(preferences, recent, category, factData.content);
+    factData = await generateFact(preferences, recent, category, length, factData.content);
     check = isDuplicate(factData.content, allContents);
   }
 
@@ -114,7 +114,8 @@ async function processManualFact() {
   console.log('Zpracovávám manuální /new fact...');
 
   const category = await pickCategory();
-  const factData = await generateFactWithDedup(category);
+  const length = await pickLength();
+  const factData = await generateFactWithDedup(category, length);
   const cat = normalizeCategory(factData.category);
   const factId = await insertFact(factData.content, cat, factData.length);
 
@@ -181,9 +182,10 @@ async function processActiveSlots() {
 /** Pošle nový fact vygenerovaný Gemini s deduplikací */
 async function sendNewFact(key) {
   const category = await pickCategory();
+  const length = await pickLength();
 
   console.log('Generuji nový fact...');
-  const factData = await generateFactWithDedup(category);
+  const factData = await generateFactWithDedup(category, length);
   const cat = normalizeCategory(factData.category);
 
   const factId = await insertFact(factData.content, cat, factData.length);
