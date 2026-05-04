@@ -27,7 +27,7 @@ import {
 } from './db.js';
 import { sendMessage, factReplyKeyboard, quizReplyKeyboard } from './telegram.js';
 import { generateFact, generateQuiz } from './gemini.js';
-import { getPreferences, pickCategory, pickLength, normalizeCategory } from './profile.js';
+import { getPreferences, pickCategory, normalizeCategory } from './profile.js';
 import { generateWeeklyStats } from './stats.js';
 
 // ── Similarity check ────────────────────────────────────
@@ -114,8 +114,7 @@ async function processManualFact() {
   console.log('Zpracovávám manuální /new fact...');
 
   const category = await pickCategory();
-  const length = await pickLength();
-  const factData = await generateFactWithDedup(category, length);
+  const factData = await generateFactWithDedup(category, 'short');
   const cat = normalizeCategory(factData.category);
   const factId = await insertFact(factData.content, cat, factData.length);
 
@@ -179,13 +178,12 @@ async function processActiveSlots() {
   }
 }
 
-/** Pošle nový fact vygenerovaný Gemini s deduplikací */
+/** Pošle nový fact vygenerovaný Gemini s deduplikací (jen krátké, 1-3 věty) */
 async function sendNewFact(key) {
   const category = await pickCategory();
-  const length = await pickLength();
 
   console.log('Generuji nový fact...');
-  const factData = await generateFactWithDedup(category, length);
+  const factData = await generateFactWithDedup(category, 'short');
   const cat = normalizeCategory(factData.category);
 
   const factId = await insertFact(factData.content, cat, factData.length);
@@ -200,27 +198,13 @@ async function sendNewFact(key) {
   console.log(`Fact #${factId} odeslán (${cat}).`);
 }
 
-/** Ve quiz slotu — pošle kvíz nebo fallback na nový fact */
+/**
+ * Ve quiz slotu — pošle kvíz nebo fallback na nový fact.
+ * Priorita: NOVÝ kvíz z dosud nekvízovaného factu má přednost před due review,
+ * aby se rotovaly všechny rated facty než se začnou opakovat.
+ */
 async function sendQuizOrFact(key) {
-  // Priorita 1: Existující kvízy k opakování (spaced repetition)
-  const dueQuizzes = await getDueQuizzes();
-  if (dueQuizzes.length > 0) {
-    const due = dueQuizzes[0];
-    console.log(`Regeneruji kvíz pro fact #${due.source_fact_id}...`);
-    const prevQuestions = await getPreviousQuizQuestions(due.source_fact_id);
-    const quizData = await generateQuiz(due.fact_content, prevQuestions);
-    const quizId = await insertQuiz(
-      due.source_fact_id,
-      quizData.question,
-      quizData.options,
-      quizData.correct_index
-    );
-    await sendQuizMessage(quizId, quizData);
-    await markSlotDone(key);
-    return;
-  }
-
-  // Priorita 2: Nový kvíz z factu (s vyloučením nedávných source_fact_id)
+  // Priorita 1: Nový kvíz z factu, který nebyl v kvízu v posledních 7 dnech
   const factForQuiz = await getFactForQuiz();
   if (factForQuiz) {
     console.log(`Generuji nový kvíz z fact #${factForQuiz.id}...`);
@@ -237,8 +221,27 @@ async function sendQuizOrFact(key) {
     return;
   }
 
+  // Priorita 2: Due Leitner review (jen pokud žádný nový fact není k dispozici,
+  // a kvíz není ze stejného source_fact_id co byl v posledních 7 dnech)
+  const dueQuizzes = await getDueQuizzes();
+  if (dueQuizzes.length > 0) {
+    const due = dueQuizzes[0];
+    console.log(`Leitner review — regeneruji kvíz pro fact #${due.source_fact_id}...`);
+    const prevQuestions = await getPreviousQuizQuestions(due.source_fact_id);
+    const quizData = await generateQuiz(due.fact_content, prevQuestions);
+    const quizId = await insertQuiz(
+      due.source_fact_id,
+      quizData.question,
+      quizData.options,
+      quizData.correct_index
+    );
+    await sendQuizMessage(quizId, quizData);
+    await markSlotDone(key);
+    return;
+  }
+
   // Priorita 3: Fallback — pošli nový fact místo kvízu
-  console.log('Není z čeho dělat kvíz, posílám fact.');
+  console.log('Není z čeho dělat kvíz (vše už bylo v kvízu nedávno), posílám fact.');
   await sendNewFact(key);
 }
 

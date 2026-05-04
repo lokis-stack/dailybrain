@@ -39,7 +39,7 @@ KRITICKÉ: Nesmíš opakovat ani parafrázovat žádný z uvedených factů. Ka�
   }
 
   const lengthInstruction = {
-    short: 'PŘESNĚ 1-2 věty. Stručný, hutný, bez rozvíjení.',
+    short: 'PŘESNĚ 1-3 věty. Stručný, hutný, bez vaty. Ne víc než 3 věty.',
     medium: 'PŘESNĚ 3-4 věty. Fact plus krátký kontext.',
     long: 'PŘESNĚ 5-7 vět. Fact plus širší kontext, souvislosti, konkrétní detaily.',
   }[forcedLength];

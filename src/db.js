@@ -361,73 +361,78 @@ export async function markQuizMissed(quizId) {
 
 /**
  * Kvízy s next_review_at <= teď (pro spaced repetition).
- * Vyloučí source_fact_id posledních 3 odeslaných kvízů, aby se neopakoval
- * pořád stejný fact. Pokud vše vyfiltrováno, fallback na posledních 2.
+ * VYLUČUJE source_fact_id, který byl v jakémkoliv kvízu v posledních 7 dnech.
+ * Tím se zajistí, že stejný fact nemůže přijít víckrát za týden.
  */
 export async function getDueQuizzes() {
   const now = new Date().toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
+  // Strict: vyloučit cokoliv co bylo v kvízu v posledních 7 dnech
   let result = await client.execute({
     sql: `SELECT q.*, f.content as fact_content FROM quizzes q
           JOIN facts f ON f.id = q.source_fact_id
           WHERE q.status = 'answered' AND q.next_review_at <= ?
             AND q.source_fact_id NOT IN (
               SELECT DISTINCT source_fact_id FROM quizzes
-              ORDER BY created_at DESC LIMIT 3
+              WHERE created_at > ?
             )
           ORDER BY q.next_review_at ASC LIMIT 5`,
-    args: [now],
+    args: [now, sevenDaysAgo],
   });
 
   if (result.rows.length > 0) return result.rows;
 
-  // Fallback: vyloučit jen posledních 2
+  // Fallback: 3 dny (pokud nic není starší 7 dnů)
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
   result = await client.execute({
     sql: `SELECT q.*, f.content as fact_content FROM quizzes q
           JOIN facts f ON f.id = q.source_fact_id
           WHERE q.status = 'answered' AND q.next_review_at <= ?
             AND q.source_fact_id NOT IN (
               SELECT DISTINCT source_fact_id FROM quizzes
-              ORDER BY created_at DESC LIMIT 2
+              WHERE created_at > ?
             )
           ORDER BY q.next_review_at ASC LIMIT 5`,
-    args: [now],
+    args: [now, threeDaysAgo],
   });
 
   return result.rows;
 }
 
 /**
- * Vybere fact pro nový kvíz — ohodnocený, starší 2 dny,
- * vyloučí source_fact_id posledních N kvízů aby se neopakovaly.
+ * Vybere fact pro nový kvíz — ohodnocený, starší 2 dny.
+ * VYLUČUJE source_fact_id, který byl v kvízu v posledních 7 dnech.
  */
 export async function getFactForQuiz() {
   const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  // Nejdřív zkus vyloučit posledních 5 source_fact_id
+  // Strict: žádný kvíz v posledních 7 dnech ze stejného factu
   let result = await client.execute({
     sql: `SELECT f.* FROM facts f
           WHERE f.rating IS NOT NULL AND f.status = 'rated' AND f.created_at < ?
             AND f.id NOT IN (
               SELECT DISTINCT source_fact_id FROM quizzes
-              ORDER BY created_at DESC LIMIT 5
+              WHERE created_at > ?
             )
           ORDER BY RANDOM() LIMIT 1`,
-    args: [twoDaysAgo],
+    args: [twoDaysAgo, sevenDaysAgo],
   });
 
   if (result.rows.length > 0) return result.rows[0];
 
-  // Fallback: vyloučit jen posledních 3
+  // Fallback: 3 dny
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
   result = await client.execute({
     sql: `SELECT f.* FROM facts f
           WHERE f.rating IS NOT NULL AND f.status = 'rated' AND f.created_at < ?
             AND f.id NOT IN (
               SELECT DISTINCT source_fact_id FROM quizzes
-              ORDER BY created_at DESC LIMIT 3
+              WHERE created_at > ?
             )
           ORDER BY RANDOM() LIMIT 1`,
-    args: [twoDaysAgo],
+    args: [twoDaysAgo, threeDaysAgo],
   });
 
   return result.rows[0] ?? null;
